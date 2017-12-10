@@ -1,0 +1,355 @@
+---
+title: "Final_pred"
+author: "Jagruti"
+date: "12/10/2017"
+output: html_document
+---
+
+
+In this Project, We are asked to predict the chances of a user listening to a song repetitively after the first observable listening event within a time window was triggered. If there are recurring listening event(s) triggered within a month after the user’s very first observable listening event, its target is marked 1, and 0 otherwise in the training set. The same rule applies to the testing set.
+
+KKBOX provides a training data set consists of information of the first observable listening event for each unique user-song pair within a specific time duration. Metadata of each unique user and song pair is also provided. The use of public data to increase the level of accuracy of your prediction is encouraged.
+
+The train and the test data are selected from users listening history in a given time period. Note that this time period is chosen to be before the WSDM-KKBox Churn Prediction time period. The train and test sets are split based on time, and the split of public/private are based on unique user/song pairs.
+
+The link to the dataset : https://www.kaggle.com/c/kkbox-music-recommendation-challenge/data
+
+
+![Alt text](/Users/GD/Desktop/MSDA/DATA 607/Final Project/abc.png)
+
+
+Target = 1 refers to a listener who listened to a song within a month of the first observed listening event 
+Target = 0 refers to a listener who does not listen to the song again within a month of first hearing it
+
+Our Final target is to build the csv file with Row_Id for the songs and its target value.
+
+
+#### Libraries
+```{r,echo = TRUE}
+suppressWarnings(suppressMessages(library(ggplot2)))
+suppressWarnings(suppressMessages(library(dplyr)))
+suppressWarnings(suppressMessages(library(reshape2)))
+suppressWarnings(suppressMessages(library(tidyr)))
+suppressWarnings(suppressMessages(library(stringr)))
+suppressWarnings(suppressMessages(library(rpart)))
+suppressWarnings(suppressMessages(library(RColorBrewer)))
+suppressWarnings(suppressMessages(library(rpart.plot)))
+suppressWarnings(suppressMessages(library(recommenderlab)))
+#suppressWarnings(suppressMessages(library(rattle)))
+```
+
+Having almost five different tables to load data:
+1) Members
+2) Songs
+3) Extra information on songs
+4) Train set
+5) Test set
+
+Step I : Data Cleansing and Operations
+
+The procedure below is for data gathering and merging as per requirement
+
+```{r,echo = TRUE}
+#Loading Members Table
+members <- read.csv("https://raw.githubusercontent.com/swigodsky/Music-Recommender-System/master/members.csv", stringsAsFactors = FALSE)
+members <- members[1:10000,]
+colnames(members) <- c("user_id", "city", "age", "gender", "registration_method", "registration_time", "expiration_date")
+members$age <- gsub(0, NA, members$age) #replace age that is recorded as zero with NA
+```
+
+
+# Operations on Extra information on songs
+
+```{r,echo = TRUE,fileEncoding="latin1"}
+song_extra_info <- read.csv("https://raw.githubusercontent.com/swigodsky/Music-Recommender-System/master/song_extra_infob.csv",header=TRUE, stringsAsFactors=FALSE)
+song_extra_info <- song_extra_info[1:4000,]
+head(song_extra_info)
+```
+
+
+# Operations on loading songs data
+
+```{r,echo = TRUE}
+songs <- read.csv("https://raw.githubusercontent.com/swigodsky/Music-Recommender-System/master/songsd.csv", header=FALSE, stringsAsFactors = FALSE)
+names(songs) = as.character(unlist(songs[1,]))
+songs <- songs[-1,]
+songs<-songs[1:10000,]
+colnames(songs) <- c("song_id", "song_length", "genre_id", "artist_name", "composer", "lyricist", "language")
+head(songs)
+```
+
+## Test and train data
+
+```{r,echo = TRUE}
+#Loading Test Data - This Is Used For Submission To Kaggle
+testdata <- read.csv("https://raw.githubusercontent.com/swigodsky/Music-Recommender-System/master/test.csv", stringsAsFactors = FALSE)
+testdata <-testdata[1:4000,]
+colnames(testdata) <- c("row_id", "user_id", "song_id", "system_tab", "layout_seen", "entry_source")
+```
+
+
+#Loading Training Data - This is Used To Build and Test The Prediction Model
+
+```{r,echo = TRUE}
+trainingdata <- read.csv("https://raw.githubusercontent.com/swigodsky/Music-Recommender-System/master/trainb.csv", stringsAsFactors = FALSE)
+
+testwithtargetknown <-trainingdata[6001:8000,] #this data frame will be used to test our model
+colnames(testwithtargetknown) <- c("user_id", "song_id", "system_tab", "layout_seen", "entry_source", "target")
+
+trainingdata <-trainingdata[1:6000,]
+colnames(trainingdata) <- c("user_id", "song_id", "system_tab", "layout_seen", "entry_source", "target")
+head(trainingdata)
+```
+
+#### First graph to get our predictions right
+
+```{r,echo = TRUE}
+ggplot(trainingdata,aes(x= system_tab))+ theme_bw(base_size = 16) + theme(axis.text.x=element_text(angle=90,hjust=1)) + geom_bar(colour = "red")
+```
+
+It is clear that people will prefer to listen songs from their own library and have more probability to listen those songs again.
+
+
+### Step II : Merging Operations for model building
+
+```{r,echo = TRUE}
+merger1 <- merge(trainingdata,songs,"song_id", all.x = TRUE)  
+merger_train <- merge(merger1,members,"user_id", all.x = TRUE)
+
+merger2 <- merge(testwithtargetknown,songs, by = "song_id", all.x=TRUE)  
+merger_train2 <- merge(merger2,members, by = "user_id", all.x=TRUE)
+```
+
+```{r,echo = TRUE}
+knitr::kable(head(merger_train))
+```
+
+```{r,echo = TRUE}
+merger3 <- merge.data.frame(testdata,songs,by = "song_id", all.x = TRUE)
+merger_test <- merge.data.frame(merger3,members,by = "user_id", all.x = TRUE)
+```
+
+
+#### The following chunk is written to get top 10  songs Id listened by users with descending orders.
+
+```{r,echo = TRUE}
+user_based <- data.frame(table(merger_train2$user_id))
+song_based <- data.frame(table(merger2$song_id)) 
+colnames(user_based) <- c("user_id","Frequency")
+colnames(song_based) <- c("song_id","Frequency1")
+
+user_based <- arrange(user_based,desc(Frequency))
+user_based <- as.data.frame(user_based)
+user_based$user_id <- as.character(user_based$user_id)
+
+
+song_based <- arrange(song_based,desc(Frequency1))
+song_based <- as.data.frame(song_based)
+
+top_n(song_based,10,Frequency1)
+```
+
+
+### Step III : Developement of model
+
+Considering The Proportion of Users Who Listen to a Song More Than Once Within One Month of First Hearing It - Target = 1
+
+```{r,echo = TRUE}
+prop.table(table(merger_train$target))
+merger_test$target <- rep(1,4000)
+merger_train2$targetguess <- rep(1, 2000)
+```
+
+Inetresting!!! 78.73% of listeners listened to songs within a month of first hearing it. This means we can assume that most listeners will have a target of 1.
+
+
+# Gender - target model
+
+The graph gives a general idea of what gender group is more hearing music as per our data set.
+
+```{r,echo = TRUE}
+ggplot(data=subset(merger_train, !is.na(gender)), aes(x=gender)) + geom_bar(stat="count")
+```
+
+```{r,echo = TRUE}
+prop.table(table(merger_train$gender, merger_train$target),1)
+```
+
+##### system Tab - target model
+
+```{r,echo = TRUE}
+prop.table(table(merger_train$system_tab, merger_train$target),1)
+```
+
+The system tab is the name of the tab where the event was triggered. System tabs are used to categorize KKBOX mobile apps functions. The target is zero for 75.80% of people whose system tab is radio and 63.04% of the people whose system tab is listen with. System tab will be helpful for making predictions.
+
+#### Age- Target model
+
+```{r,echo = TRUE}
+merger_train$younger <- 0
+merger_train$younger[merger_train$age < 30] <-1
+prop.table(table(merger_train$younger, merger_train$target),1)
+```
+
+Different age cutoffs were tested, and at every age, the percentage of people who repeatedly listened to a song was approximately the same. 74% of people below and 79% of people above 30 years old listened to a song again within one month of first hearing it.
+
+
+Taking into account every parameter we decided two develope two models for our final predictions
+
+
+#### 1) Gender and System Tab - Target Model
+
+There are a number of helpful predictions that can be produced based on this data. 31.57% of females and 20% of males with a system tab of radio had a target of 1. 37.50% of females and 0% of males with a system tab of 'listen with' had a target of 1, but 71% of people whose gender was not listed had a target of 1 with that system tab. 90% of females and 17% of males with the search system tab had a target of 1.
+
+```{r,echo = TRUE}
+aggregate(target ~ system_tab + gender, data=merger_train, FUN=function(x) {sum(x)/length(x)})
+```
+
+
+Adjusting the Prediction to take into account listen with and female, male and search
+
+```{r,echo = TRUE}
+merger_test$target[is.na(merger_test$gender) & merger_test$system_tab=='listen with'] <- 1
+merger_test$target[merger_test$gender=='male'& merger_test$system_tab=='search'] <- 0
+
+merger_train2$targetguess[is.na(merger_train2$gender) & merger_train2$system_tab=='listen with'] <- 1
+merger_train2$targetguess[merger_train2$gender=='male'& merger_train2$system_tab=='search'] <- 0
+```
+
+
+Comparing the Target to Our Guess of the Target
+
+
+```{r,echo = TRUE}
+(sum(merger_train2$target == merger_train2$targetguess))/2000
+```
+
+The target is correctly predicted 79.90% of the time.
+
+#### Descision Tree
+
+```{r,echo = TRUE}
+fit <- rpart(target ~  gender + system_tab + entry_source, data=merger_train2, method="class")
+#fancyRpartPlot(fit)
+```
+
+
+Using the Decision Tree to Predict the Target Value
+
+```{r,echo = TRUE}
+Prediction <- predict(fit, merger_train2, type = "class")
+merger_train2$predict <- Prediction
+(sum(merger_train2$target == merger_train2$predict))/2000
+```
+Using the decision tree, the target was predicted 80.30% of the time.
+
+```{r,echo = TRUE}
+submit <- data.frame(user_id = merger_test$user_id, target = merger_test$target)
+write.csv(submit, file = "music.csv", row.names = FALSE)
+```
+
+
+
+### 2) Recommender Lab model
+
+####Second model to get the desired sample_submisson file for our development of shiny app is made with 'Recommender lab' model 
+
+As working with song_id was a tedious process,We gave sequential numbers "Row_id" to our train set for better understanding.
+[Song_id's are bit lengthy here]
+
+### Data processing
+
+```{r,echo = TRUE}
+merger_train$Row_id <- seq.int(nrow(merger_train))
+fil <- dcast(merger_train, Row_id ~ target,value.var = "Row_id")
+R <- as.matrix(fil)
+r <- as(R,"realRatingMatrix") # R is converted into realRatingMatrix structure
+```
+
+```{r,echo = TRUE}
+r_m <- normalize(r)
+str(r_m)
+head(as(r_m,"list"))
+```
+
+Heatmap for raw-targets and Normalized targets 
+
+```{r,echo = TRUE}
+image(r,main = "Raw Targets")
+image(r_m,main = "Normalized Targets")
+```
+
+Turning matrix into binary model
+
+```{r,echo = TRUE}
+r_b <- binarize(r,minRating = 1)
+head(as(r_b,"matrix"))
+```
+
+We used "UBCF" (User-based collaborative filtering) for the predictions.
+
+```{r,echo = TRUE}
+rec <- Recommender(r[1:nrow(r)],method="UBCF", param=list(normalize = "Z-score",method="Cosine",nn=25))
+recom <- predict(rec,r[1:nrow(r)],type = "topNList",n = 10)
+Row_id <- testdata$row_id 
+rec_list <- as(recom,"list")
+submission_file <- data.frame(matrix(unlist(rec_list[1:4000])))
+colnames(submission_file) <- "Recommended_target"
+submission_file1 <- as.data.frame(cbind(Row_id,submission_file))
+head(submission_file1)
+write.table(submission_file1,file = "submission.csv",row.names=FALSE,col.names=TRUE,sep=',')
+```
+
+Final submission file gives very clear picture of row_ids and their required targets,which was the official requirement of project!!
+
+
+#### Step 4: Further development to help users with our results
+
+In our attempt to build application through shiny and help users with our result ,a small attemp is made to develope the application .
+
+![Alt text](/Users/GD/Desktop/MSDA/DATA 607/Final Project/Shiny.png)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
